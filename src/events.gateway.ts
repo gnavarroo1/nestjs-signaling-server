@@ -42,8 +42,6 @@ export class EventsGateway
   @SubscribeMessage('disconnecting')
   handleDisconnecting(client: Socket): any {
     this.logger.log('Client disconnected: ' + client.id);
-    console.log(this.participants);
-    console.log(this.participants.has(client.id));
     if (this.participants.has(client.id)) {
       const participant = this.participants.get(client.id);
       this.logger.log('Broadcasting to meeting: ' + participant.meetingId);
@@ -66,7 +64,7 @@ export class EventsGateway
       meetingId: payload.roomId,
       isMeetingCreator: payload.isMeetingCreator,
     });
-    console.log('PARTICIPANT JOINS ROOM => ' + payload.roomId);
+    // console.log('PARTICIPANT JOINS ROOM => ' + payload.roomId);
     this.wss.to(payload.roomId).emit('join-meeting', {
       id: payload.id,
       alias: payload.alias,
@@ -78,12 +76,17 @@ export class EventsGateway
   @UseGuards(WsGuard)
   @SubscribeMessage('end-meeting-session')
   handleEndMeetingSession(client: Socket, payload: any): any {
+    console.log('end-meeting-session', payload);
+    console.log(client.rooms)
     const participant = this.participants.get(payload.id);
-    if (participant && participant.isMeetingCreator) {
-      this.wss.to(payload.roomId).emit('end-meeting-session',{
-        msg: 'end-meeting',
-      });
-    }
+    this.wss.to(payload.roomId).emit('end-meeting-session', {
+      msg: 'end-meeting',
+    });
+    // if (participant && participant.isMeetingCreator) {
+    //   this.wss.to(payload.roomId).emit('end-meeting-session', {
+    //     msg: 'end-meeting',
+    //   });
+    // }
   }
 
   // WEBRTC HANDSHAKE
