@@ -6,10 +6,21 @@ import {
   WebSocketGateway,
   WebSocketServer,
 } from '@nestjs/websockets';
-import { Logger, UseGuards } from '@nestjs/common';
-import { Socket, Server } from 'socket.io';
-import { WsGuard } from './auth/guards/ws-guard.guard';
-import { Participant } from './model/participant.model';
+import { Logger } from '@nestjs/common';
+import { Server, Socket } from 'socket.io';
+
+export type SignalingHandshakePayload = {
+  id: string;
+  target: string;
+  targetSocketId: string;
+  sdp: RTCSessionDescriptionInit;
+};
+export type SignalingIceCandidatePayload = {
+  id: string;
+  target: string;
+  targetSocketId: string;
+  candidate: RTCIceCandidateInit;
+};
 
 @WebSocketGateway({
   cors: {
@@ -19,10 +30,8 @@ import { Participant } from './model/participant.model';
 export class EventsGateway
   implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect
 {
-  private participants: Map<string, Participant> = new Map<
-    string,
-    Participant
-  >();
+  connections: Map<string, any> = new Map<string, any>();
+
   @WebSocketServer() wss: Server;
   private logger: Logger = new Logger('EventsGateway');
 
@@ -38,84 +47,107 @@ export class EventsGateway
     this.logger.log('Client disconnected: ' + client.id);
   }
 
-  @UseGuards(WsGuard)
   @SubscribeMessage('disconnecting')
   handleDisconnecting(client: Socket): any {
     this.logger.log('Client disconnected: ' + client.id);
-    if (this.participants.has(client.id)) {
-      const participant = this.participants.get(client.id);
-      this.logger.log('Broadcasting to meeting: ' + participant.meetingId);
-      this.wss.to(participant.meetingId).emit('participant-disconnected', {
-        id: participant.id,
-        sender: client.id,
+    const connection = this.connections.get(client.id);
+    if (connection) {
+      this.wss.to(connection.meetingId).emit('memberDisconnect', {
+        socketId: client.id,
+        meetingMemberId: connection.meetingMemberId,
       });
-      this.participants.delete(client.id);
+      this.connections.delete(client.id);
     }
   }
 
   //WEB APP MEETING HANDLING
-  @UseGuards(WsGuard)
-  @SubscribeMessage('join-meeting')
-  handleJoinMeeting(client: Socket, payload: any): any {
-    this.participants.set(client.id, {
-      id: payload.id,
-      alias: payload.alias,
-      socketId: client.id,
-      meetingId: payload.roomId,
-      isMeetingCreator: payload.isMeetingCreator,
+
+  @SubscribeMessage('joinMeeting')
+  handleJoinMeeting(
+    client: Socket,
+    payload: {
+      meetingMemberId: string;
+      meetingId: string;
+    },
+  ): any {
+    client.join(payload.meetingId);
+    this.connections.set(client.id, {
+      meetingMemberId: payload.meetingMemberId,
+      meetingId: payload.meetingId,
     });
-    // console.log('PARTICIPANT JOINS ROOM => ' + payload.roomId);
-    this.wss.to(payload.roomId).emit('join-meeting', {
-      id: payload.id,
-      alias: payload.alias,
-      socketId: client.id,
-    });
-    client.join(payload.roomId);
   }
 
-  @UseGuards(WsGuard)
-  @SubscribeMessage('end-meeting-session')
-  handleEndMeetingSession(client: Socket, payload: any): any {
-    console.log('end-meeting-session', payload);
-    console.log(client.rooms)
-    const participant = this.participants.get(payload.id);
-    this.wss.to(payload.roomId).emit('end-meeting-session', {
-      msg: 'end-meeting',
-    });
-    // if (participant && participant.isMeetingCreator) {
-    //   this.wss.to(payload.roomId).emit('end-meeting-session', {
-    //     msg: 'end-meeting',
-    //   });
-    // }
+  @SubscribeMessage('initReceive')
+  handleInitReceive(
+    client: Socket,
+    payload: {
+      meetingMemberId: string;
+      meetingId: string;
+    },
+  ): any {
+    const member = this.connections.get(payload.meetingMemberId);
+    if (!member) {
+      client.join(payload.meetingId);
+      this.connections.set(client.id, {
+        meetingMemberId: payload.meetingMemberId,
+        meetingId: payload.meetingId,
+      });
+    }
+    client
+      .to(payload.meetingId)
+      .emit('initReceive', { ...payload, socketId: client.id });
   }
 
-  // WEBRTC HANDSHAKE
-  @UseGuards(WsGuard)
+  @SubscribeMessage('initSend')
+  handleInitSend(
+    client: Socket,
+    payload: {
+      socketId: string;
+      meetingMemberId: string;
+    },
+  ): any {
+    const connection = this.connections.get(client.id);
+    if (connection) {
+      client.to(payload.socketId).emit('initSend', {
+        srcSocketId: client.id,
+        srcMeetingMember: connection.meetingMemberId,
+      });
+    }
+  }
+
   @SubscribeMessage('offer')
-  handleOffer(client: Socket, payload): any {
-    console.log('offer');
-    this.wss
-      .to(payload.target)
-      .emit('offer', { id: payload.id, sender: client.id, sdp: payload.sdp });
+  handleOffer(client: Socket, payload: SignalingHandshakePayload): any {
+    const connection = this.connections.get(payload.targetSocketId);
+    if (connection.meetingMemberId) {
+      client
+        .to(payload.targetSocketId)
+        .emit('offer', { meetingMemberId: payload.id, sdp: payload.sdp });
+    }
   }
 
-  @UseGuards(WsGuard)
   @SubscribeMessage('answer')
-  handleAnswer(client: Socket, payload): any {
-    console.log('answer');
-    this.wss
-      .to(payload.target)
-      .emit('answer', { id: payload.id, sender: client.id, sdp: payload.sdp });
+  handleAnswer(client: Socket, payload: SignalingHandshakePayload): any {
+    const connection = this.connections.get(payload.targetSocketId);
+    if (connection.meetingMemberId) {
+      client
+        .to(payload.targetSocketId)
+        .emit('answer', { meetingMemberId: payload.id, sdp: payload.sdp });
+    }
   }
 
-  @UseGuards(WsGuard)
-  @SubscribeMessage('ice-candidate')
-  handleIceCandidate(client: Socket, payload): any {
-    console.log('ice-candidate', payload);
-    this.wss.to(payload.target).emit('ice-candidate', {
-      id: payload.id,
-      sender: client.id,
-      candidate: payload.candidate,
-    });
+  @SubscribeMessage('iceCandidate')
+  handleIceCandidate(
+    client: Socket,
+    payload: SignalingIceCandidatePayload,
+  ): any {
+    const connection = this.connections.get(payload.targetSocketId);
+    if (connection.meetingMemberId) {
+      client.to(payload.targetSocketId).emit('iceCandidate', {
+        meetingMemberId: payload.id,
+        candidate: payload.candidate,
+      });
+    } else {
+      this.logger.error('NO SOCKET FOUND FOR ID ', payload);
+    }
   }
 }
