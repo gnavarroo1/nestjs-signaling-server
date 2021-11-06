@@ -83,6 +83,7 @@ export class EventsGateway
     payload: {
       meetingMemberId: string;
       meetingId: string;
+      targetMemberId: string;
     },
   ): any {
     const member = this.connections.get(payload.meetingMemberId);
